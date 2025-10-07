@@ -1,16 +1,24 @@
+# Docker Compose for Local Development Only
+#
+# For production deployment, use k3s + Flux GitOps
+# See: deployments/kubernetes/README.md
+#
+# This file provides local PostgreSQL and Redis for development/testing
+# when you don't want to connect to the production cluster.
+
 version: '3.8'
 
 services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_DB: housepoints_go
+      POSTGRES_DB: housepoints_go_dev
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_dev_password
+      POSTGRES_PASSWORD: dev_password_local_only
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Use 5433 to avoid conflict with production port forwarding
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -20,9 +28,9 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"  # Use 6380 to avoid conflict with production port forwarding
     volumes:
-      - redis_data:/data
+      - redis_dev_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -30,5 +38,5 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
-  redis_data:
+  postgres_dev_data:
+  redis_dev_data:
