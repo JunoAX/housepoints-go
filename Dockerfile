@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM --platform=linux/amd64 golang:1.23-alpine AS builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/bin/server cmd/server/main.go
 
 # Runtime stage
-FROM alpine:3.18
+FROM --platform=linux/amd64 alpine:3.18
 
 # Install ca-certificates for HTTPS
 RUN apk --no-cache add ca-certificates tzdata
