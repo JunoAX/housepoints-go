@@ -1,18 +1,19 @@
-# HousePoints Go - Multi-Tenant Database Architecture
+# HousePoints Go - Database-Per-Family Architecture
 
-**Version**: 1.0
+**Version**: 2.0 (Database-Per-Family)
 **Last Updated**: 2025-10-07
 **Database**: PostgreSQL 15+
 
 ## Table of Contents
 1. [Architecture Overview](#architecture-overview)
-2. [Multi-Tenant Strategy](#multi-tenant-strategy)
+2. [Why Database-Per-Family](#why-database-per-family)
 3. [Schema Organization](#schema-organization)
-4. [Core Tables](#core-tables)
-5. [Feature Domains](#feature-domains)
-6. [Platform Management](#platform-management)
-7. [Migration Strategy](#migration-strategy)
-8. [Security & Isolation](#security--isolation)
+4. [Platform Database](#platform-database)
+5. [Family Databases](#family-databases)
+6. [Database Provisioning](#database-provisioning)
+7. [Connection Management](#connection-management)
+8. [Migration Strategy](#migration-strategy)
+9. [Operations & Management](#operations--management)
 
 ---
 
@@ -20,693 +21,1118 @@
 
 ### Design Philosophy
 
-**Multi-Tenant with Shared Database**
-- Single PostgreSQL database shared across all families
-- Tenant isolation via `family_id` foreign key
-- Row-Level Security (RLS) policies enforce data isolation
-- Cost-effective for 10,000 families
-- Centralized backups and maintenance
+**Physical Database Isolation**
+- Each family gets their own PostgreSQL database
+- Platform database for routing, authentication, billing
+- Zero risk of cross-family data leaks
+- Perfect for sensitive family data (schedules, medical info, school data)
 
-**Current State (Python)**
-- 124 tables in single-tenant schema
-- All data belongs to "Gamull" family
-- No multi-tenant support
+### Architecture Diagram
 
-**Target State (Go)**
-- All existing tables + new multi-tenant tables
-- Every tenant-scoped table has `family_id` column
-- Platform-level tables for cross-family management
-- Migration path to reuse existing data
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    PLATFORM DATABASE                         │
+│              (housepoints_platform)                          │
+│                                                              │
+│  Tables:                                                     │
+│  - families (routing table)                                 │
+│  - users (global authentication)                            │
+│  - subscriptions (billing)                                  │
+│  - platform_analytics (aggregated metrics)                  │
+│  - audit_logs (security)                                    │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+        ┌───────────────────┴───────────────────┐
+        ↓                                        ↓
+┌──────────────────────┐              ┌──────────────────────┐
+│  FAMILY DATABASE     │              │  FAMILY DATABASE     │
+│  (family_gamull)     │              │  (family_smith)      │
+│                      │              │                      │
+│  All feature tables: │              │  All feature tables: │
+│  - users             │              │  - users             │
+│  - chores            │              │  - chores            │
+│  - assignments       │              │  - assignments       │
+│  - rewards           │              │  - rewards           │
+│  - family_schedule   │              │  - family_schedule   │
+│  - school_events     │              │  - school_events     │
+│  ... 120+ tables     │              │  ... 120+ tables     │
+│                      │              │                      │
+│  NO family_id needed │              │  NO family_id needed │
+└──────────────────────┘              └──────────────────────┘
+```
+
+### Key Benefits
+
+✅ **Perfect Data Isolation**: Physical separation, zero risk of data leaks
+✅ **Compliance Friendly**: Easy to prove FERPA/COPPA compliance for sensitive family data
+✅ **Independent Scaling**: Big families get bigger DBs
+✅ **Simpler Schema**: No family_id columns needed
+✅ **Easy Backup/Restore**: One family at a time
+✅ **Trust & Marketing**: "Your family's data is completely isolated"
 
 ---
 
-## Multi-Tenant Strategy
+## Why Database-Per-Family
 
-### Three Tiers of Data
+### The Problem with Shared Databases
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   PLATFORM TIER                          │
-│  - families                                              │
-│  - users (can belong to multiple families)              │
-│  - subscriptions, billing, analytics                    │
-│  - system_settings (global)                              │
-└─────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────┐
-│                   FAMILY TIER                            │
-│  - family_settings (per-family config)                  │
-│  - family_members (user-to-family relationships)        │
-│  - chores, assignments, rewards (scoped to family)      │
-│  - All 120+ existing feature tables (+ family_id)       │
-└─────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────┐
-│                   USER TIER                              │
-│  - user_profiles (family-specific profile data)         │
-│  - user_permissions (family-scoped)                     │
-│  - points, achievements (per family membership)          │
-└─────────────────────────────────────────────────────────┘
-```
+**Risk of Data Leakage**:
+- One RLS policy bug exposes all families' data
+- Complex queries across 120+ tables = high bug risk
+- Developer mistakes can't be caught by tests alone
 
-### Key Concepts
+**Sensitive Data Types in HousePoints**:
+- Children's school schedules and events
+- Medical appointments and doctor visits
+- Custody arrangements (divorced parents)
+- Home addresses and contact information
+- Behavioral data (chore completion, points)
 
-**Family**: Top-level tenant
-- Unique slug for subdomain (`gamull.housepoints.ai`)
-- Subscription plan (free, premium, enterprise)
-- Isolated data via RLS policies
+**Compliance Requirements**:
+- **COPPA** (Children's Online Privacy Protection Act): Kids under 13
+- **FERPA** (Family Educational Rights and Privacy Act): School-related data
+- **GDPR**: European families' right to data deletion
+- **CCPA** (California Consumer Privacy Act): California families
 
-**User**: Can belong to multiple families
-- Global identity (email, username, password)
-- Separate profile/points per family membership
-- Example: Parent managing 2 divorced families, or nanny helping 3 families
+### Why It Works for HousePoints
 
-**Family Member**: Relationship between user and family
-- Role: parent, child, admin, guest
-- Active/inactive status
-- Created/deleted independently of user account
+**Scale is Manageable**:
+- Year 1 target: 100 families
+- Year 3 target: 1,000 families
+- PostgreSQL can handle 10,000 databases on one server
+
+**Cost is Reasonable**:
+- Small family DB: ~1GB storage, minimal compute
+- 100 families × $7/month = $700/month (managed)
+- OR: Self-host 100 DBs on one server for $40/month
+
+**Operational Simplicity**:
+- Automated database provisioning on signup
+- Backups are per-family (easy restore)
+- Can delete/archive inactive families cleanly
 
 ---
 
 ## Schema Organization
 
-### Naming Conventions
+### Two Database Types
 
-**Platform Tables** (no family_id)
+#### 1. Platform Database (Single Instance)
+**Name**: `housepoints_platform`
+**Purpose**: Routing, authentication, billing, analytics
+**Size**: Small (~100MB for 10,000 families)
+
+#### 2. Family Databases (One Per Family)
+**Name Pattern**: `family_{slug}` (e.g., `family_gamull`, `family_smith`)
+**Purpose**: All family-specific data
+**Size**: Variable (100MB - 10GB depending on usage)
+
+### No Family ID Columns!
+
+**Old approach (shared DB)**:
 ```sql
-families
-users
-subscriptions
-platform_analytics
-billing_invoices
-system_settings (global only)
+CREATE TABLE chores (
+    id UUID PRIMARY KEY,
+    family_id UUID NOT NULL,  -- ❌ Not needed anymore!
+    title VARCHAR(255)
+);
 ```
 
-**Family-Scoped Tables** (require family_id)
+**New approach (database-per-family)**:
 ```sql
-chores              -- Existing table + family_id column
-assignments         -- Existing table + family_id column
-rewards             -- Existing table + family_id column
-family_settings     -- New table (family-specific config)
-family_members      -- New table (user-to-family relationship)
-... all 120+ feature tables
+CREATE TABLE chores (
+    id UUID PRIMARY KEY,
+    title VARCHAR(255)
+    -- No family_id needed - entire DB belongs to one family
+);
 ```
 
-**Indexes Strategy**
-- Every family-scoped table: `idx_{table}_family_id` on (family_id)
-- Composite indexes: `idx_{table}_family_lookup` on (family_id, created_at)
-- User lookups: `idx_{table}_family_user` on (family_id, user_id)
+**Benefits**:
+- Simpler queries (no family_id in WHERE clause)
+- Faster queries (no family_id index needed)
+- Smaller tables (one less column per row)
+- Less migration work (don't need to add family_id to 120+ tables)
 
 ---
 
-## Core Tables
+## Platform Database
 
-### 1. Platform Tier
+### Schema: Platform Tables
 
 #### `families`
-The top-level tenant table.
+Routing table to find family's database.
 
 ```sql
 CREATE TABLE families (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    slug VARCHAR(50) UNIQUE NOT NULL,              -- Subdomain: gamull, smith-nyc
-    name VARCHAR(100) NOT NULL,                     -- Display name: "The Gamull Family"
-    plan VARCHAR(20) NOT NULL DEFAULT 'free',       -- free, premium, enterprise
-    active BOOLEAN NOT NULL DEFAULT true,
-    stripe_customer_id VARCHAR(255),                -- Billing integration
+    slug VARCHAR(50) UNIQUE NOT NULL,               -- Subdomain: gamull, smith-nyc
+    name VARCHAR(100) NOT NULL,                      -- Display name: "The Gamull Family"
+
+    -- Database connection
+    db_host VARCHAR(255) NOT NULL,                   -- Database server hostname
+    db_port INTEGER NOT NULL DEFAULT 5432,
+    db_name VARCHAR(100) NOT NULL,                   -- family_gamull
+    db_user VARCHAR(100),                            -- Optional: per-family DB user
+    db_password_encrypted TEXT,                      -- Encrypted connection password
+
+    -- Subscription
+    plan VARCHAR(20) NOT NULL DEFAULT 'free',        -- free, premium, enterprise
+    status VARCHAR(20) NOT NULL DEFAULT 'trial',     -- trial, active, suspended, cancelled
     trial_ends_at TIMESTAMPTZ,
     subscription_ends_at TIMESTAMPTZ,
+
+    -- Billing
+    stripe_customer_id VARCHAR(255),
+    stripe_subscription_id VARCHAR(255),
+
+    -- Metadata
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ                          -- Soft delete
+    deleted_at TIMESTAMPTZ,                          -- Soft delete
+
+    -- Statistics (cached from family DB)
+    member_count INTEGER DEFAULT 0,
+    storage_used_mb INTEGER DEFAULT 0,
+    last_activity_at TIMESTAMPTZ
 );
 
 CREATE INDEX idx_families_slug ON families(slug) WHERE deleted_at IS NULL;
-CREATE INDEX idx_families_active ON families(active) WHERE deleted_at IS NULL;
+CREATE INDEX idx_families_status ON families(status) WHERE deleted_at IS NULL;
 
--- Constraints
+-- Reserved slugs that cannot be used
+ALTER TABLE families ADD CONSTRAINT families_slug_not_reserved
+    CHECK (slug NOT IN ('api', 'www', 'app', 'admin', 'staging', 'dev', 'support', 'help', 'blog', 'docs'));
+
+-- Slug format validation
 ALTER TABLE families ADD CONSTRAINT families_slug_format
     CHECK (slug ~ '^[a-z0-9][a-z0-9-]*[a-z0-9]$' AND slug NOT LIKE '%-%-%');
 ```
 
-**Reserved Slugs**: `api`, `www`, `app`, `admin`, `staging`, `dev`, `support`, `help`, `blog`
-
 ---
 
 #### `users`
-Global user accounts that can belong to multiple families.
+Global user accounts (can manage multiple families).
 
 ```sql
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email VARCHAR(255) UNIQUE NOT NULL,
-    username VARCHAR(50) UNIQUE NOT NULL,           -- Globally unique
+    email_verified BOOLEAN NOT NULL DEFAULT false,
     password_hash VARCHAR(255) NOT NULL,
+
+    -- Profile (minimal - detailed profile in family DB)
     first_name VARCHAR(100),
     last_name VARCHAR(100),
     avatar_url VARCHAR(500),
-    email_verified BOOLEAN NOT NULL DEFAULT false,
-    active BOOLEAN NOT NULL DEFAULT true,
+
+    -- Security
+    mfa_enabled BOOLEAN NOT NULL DEFAULT false,
+    mfa_secret VARCHAR(255),
+    failed_login_attempts INTEGER DEFAULT 0,
+    locked_until TIMESTAMPTZ,
+
+    -- Activity
     last_login TIMESTAMPTZ,
+    last_login_ip INET,
+
+    -- Metadata
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
 );
 
 CREATE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
+CREATE INDEX idx_users_last_login ON users(last_login DESC);
 ```
 
-**Note**: This is separate from existing `users` table. Migration will:
-1. Create `users` as global identity table
-2. Rename existing `users` → `family_member_profiles` (family-scoped data)
-3. Link via `family_members` join table
+**Note**: Username is NOT globally unique (can be same across families). Email is the unique identifier.
 
 ---
 
-#### `family_members`
-Junction table connecting users to families.
+#### `family_memberships`
+Links users to families they can access.
 
 ```sql
-CREATE TABLE family_members (
+CREATE TABLE family_memberships (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role VARCHAR(20) NOT NULL DEFAULT 'child',      -- parent, child, admin, guest
-    display_name VARCHAR(100),                       -- Family-specific nickname
-    active BOOLEAN NOT NULL DEFAULT true,
-    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    left_at TIMESTAMPTZ,
+
+    -- Role in platform (affects what they can do via API)
+    role VARCHAR(20) NOT NULL DEFAULT 'member',      -- owner, admin, member
+
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'active',    -- active, invited, suspended
+    invited_at TIMESTAMPTZ,
+    joined_at TIMESTAMPTZ,
+    last_accessed_at TIMESTAMPTZ,
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ,
 
-    UNIQUE(family_id, user_id)                      -- User can only join family once
+    UNIQUE(family_id, user_id)
 );
 
-CREATE INDEX idx_family_members_family ON family_members(family_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_family_members_user ON family_members(user_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_family_members_active ON family_members(family_id, active) WHERE deleted_at IS NULL;
+CREATE INDEX idx_memberships_user ON family_memberships(user_id) WHERE status = 'active';
+CREATE INDEX idx_memberships_family ON family_memberships(family_id) WHERE status = 'active';
 ```
 
 **Roles**:
-- `admin`: Full control, billing access
-- `parent`: Manage children, approve chores, configure family
-- `child`: Complete chores, earn points, view family data
-- `guest`: Read-only access (e.g., grandparent checking in)
+- `owner`: Created the family, full access including billing
+- `admin`: Co-parent, full family management, no billing access
+- `member`: Regular access (parent or child role defined in family DB)
 
 ---
-
-### 2. Family Configuration
-
-#### `family_settings`
-Per-family configuration and preferences.
-
-```sql
-CREATE TABLE family_settings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    family_id UUID NOT NULL UNIQUE REFERENCES families(id) ON DELETE CASCADE,
-
-    -- Regional
-    timezone VARCHAR(50) NOT NULL DEFAULT 'America/New_York',
-    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
-    language VARCHAR(10) NOT NULL DEFAULT 'en-US',
-    week_start_day INTEGER NOT NULL DEFAULT 0,      -- 0=Sunday, 1=Monday
-
-    -- Branding
-    theme_color VARCHAR(7) DEFAULT '#3498db',
-    logo_url VARCHAR(500),
-    custom_domain VARCHAR(255),                      -- Premium: family.example.com
-
-    -- Features
-    enable_chores BOOLEAN NOT NULL DEFAULT true,
-    enable_rewards BOOLEAN NOT NULL DEFAULT true,
-    enable_calendar BOOLEAN NOT NULL DEFAULT true,
-    enable_meals BOOLEAN NOT NULL DEFAULT true,
-    enable_bidding BOOLEAN NOT NULL DEFAULT true,
-
-    -- Limits (plan-based)
-    max_children INTEGER NOT NULL DEFAULT 10,
-    max_parents INTEGER NOT NULL DEFAULT 2,
-    max_chores INTEGER NOT NULL DEFAULT 100,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_family_settings_family ON family_settings(family_id);
-```
-
----
-
-### 3. Family-Scoped Feature Tables
-
-All existing tables from Python backend need `family_id` column added.
-
-#### Example: `chores` (existing table)
-
-**Current Schema (Python)**:
-```sql
-CREATE TABLE chores (
-    id UUID PRIMARY KEY,
-    title VARCHAR(255),
-    base_points INTEGER,
-    created_at TIMESTAMPTZ
-);
-```
-
-**New Schema (Go + Multi-Tenant)**:
-```sql
-CREATE TABLE chores (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,  -- NEW
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    base_points INTEGER NOT NULL DEFAULT 10,
-    category VARCHAR(50),
-    created_by UUID REFERENCES users(id),
-    updated_by UUID REFERENCES users(id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ
-);
-
-CREATE INDEX idx_chores_family ON chores(family_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_chores_family_category ON chores(family_id, category);
-
--- Row-Level Security
-ALTER TABLE chores ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY chores_family_isolation ON chores
-    USING (family_id = current_setting('app.current_family_id')::UUID);
-```
-
-**Pattern applies to all 120+ tables**:
-- `assignments`, `rewards`, `meal_plans`, `school_events`, etc.
-- Add `family_id UUID NOT NULL` column
-- Add index on `(family_id)`
-- Enable RLS policy for isolation
-
----
-
-## Feature Domains
-
-### Domain 1: Chores & Assignments
-**Tables**: `chores`, `assignments`, `scheduled_chores`, `chore_rotations`, `rotation_assignments`
-
-**Multi-Tenant Changes**:
-- Add `family_id` to all tables
-- Assignment logic scoped to family members only
-- Points earned are family-specific
-
----
-
-### Domain 2: Points & Rewards
-**Tables**: `point_transactions`, `points_history`, `rewards`, `reward_purchases`, `reward_redemptions`
-
-**Multi-Tenant Changes**:
-- Each user has separate point balance per family
-- New table: `family_member_points`
-```sql
-CREATE TABLE family_member_points (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    family_id UUID NOT NULL REFERENCES families(id),
-    user_id UUID NOT NULL REFERENCES users(id),
-    total_points INTEGER NOT NULL DEFAULT 0,
-    available_points INTEGER NOT NULL DEFAULT 0,
-    lifetime_points INTEGER NOT NULL DEFAULT 0,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(family_id, user_id)
-);
-```
-
----
-
-### Domain 3: Calendar & Scheduling
-**Tables**: `family_schedule`, `family_events`, `school_calendars`, `school_events`, `custody_transitions`
-
-**Multi-Tenant Changes**:
-- Each family has own calendar
-- School calendars can be shared across families (district-level)
-- New table: `shared_school_calendars` (platform tier)
-
----
-
-### Domain 4: Meals & Food
-**Tables**: `meal_plans`, `recipes`, `food_vendors`, `shopping_lists`, `ingredients`
-
-**Multi-Tenant Changes**:
-- Meal plans scoped to family
-- Recipes can be:
-  - Private (family-only)
-  - Public (shared across platform)
-- Add `is_public BOOLEAN` and `created_by_family_id`
-
----
-
-### Domain 5: Notifications
-**Tables**: `notifications`, `notification_queue`, `notification_subscriptions`
-
-**Multi-Tenant Changes**:
-- Notifications are family + user scoped
-- Add composite index: `(family_id, user_id, created_at)`
-
----
-
-## Platform Management
-
-### Admin/Owner Access
-
-**Platform Admin (You)**:
-- Special user with `platform_admin` role
-- Can view all families, users, analytics
-- Access via `admin.housepoints.ai`
-
-**Platform Tables** (your management):
 
 #### `subscriptions`
+Billing and subscription tracking.
+
 ```sql
 CREATE TABLE subscriptions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    family_id UUID NOT NULL UNIQUE REFERENCES families(id),
-    plan VARCHAR(20) NOT NULL,                      -- free, premium, enterprise
-    status VARCHAR(20) NOT NULL,                    -- active, trial, cancelled, expired
-    stripe_subscription_id VARCHAR(255),
+    family_id UUID NOT NULL UNIQUE REFERENCES families(id) ON DELETE CASCADE,
+
+    plan VARCHAR(20) NOT NULL,                       -- free, premium, enterprise
+    status VARCHAR(20) NOT NULL,                     -- trialing, active, past_due, cancelled
+
+    -- Stripe integration
+    stripe_subscription_id VARCHAR(255) UNIQUE,
+    stripe_customer_id VARCHAR(255),
+
+    -- Billing cycle
     current_period_start TIMESTAMPTZ,
     current_period_end TIMESTAMPTZ,
     cancel_at_period_end BOOLEAN DEFAULT false,
+    cancelled_at TIMESTAMPTZ,
+
+    -- Trial
+    trial_start TIMESTAMPTZ,
+    trial_end TIMESTAMPTZ,
+
+    -- Pricing
+    amount_cents INTEGER NOT NULL,                   -- 1500 = $15.00
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX idx_subscriptions_family ON subscriptions(family_id);
+CREATE INDEX idx_subscriptions_status ON subscriptions(status);
 ```
 
+---
+
 #### `platform_analytics`
+Aggregated metrics for your dashboard.
+
 ```sql
 CREATE TABLE platform_analytics (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    family_id UUID REFERENCES families(id),         -- NULL = platform-wide metric
+
+    metric_date DATE NOT NULL,
     metric_name VARCHAR(100) NOT NULL,
     metric_value NUMERIC NOT NULL,
-    metric_date DATE NOT NULL,
+
+    -- Optional: per-family metrics
+    family_id UUID REFERENCES families(id) ON DELETE CASCADE,
+
+    -- Optional: segmentation
+    plan VARCHAR(20),                                -- Which plan tier
+    cohort_month DATE,                               -- When family signed up
+
     metadata JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(metric_date, metric_name, family_id)
 );
 
-CREATE INDEX idx_analytics_family_date ON platform_analytics(family_id, metric_date);
-CREATE INDEX idx_analytics_metric ON platform_analytics(metric_name, metric_date);
+CREATE INDEX idx_analytics_date_name ON platform_analytics(metric_date DESC, metric_name);
+CREATE INDEX idx_analytics_family ON platform_analytics(family_id, metric_date DESC);
 ```
 
-**Common Metrics**:
-- `active_families_count`
-- `total_users_count`
-- `chores_completed_today`
-- `points_awarded_total`
-- `revenue_mrr`
+**Example Metrics**:
+- `total_families`: Active families count
+- `active_users_daily`: DAU across platform
+- `chores_completed_daily`: Total chores completed
+- `revenue_mrr`: Monthly recurring revenue
+- `storage_used_gb`: Total storage across all families
+
+---
 
 #### `audit_logs`
+Security and compliance logging.
+
 ```sql
 CREATE TABLE audit_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    family_id UUID REFERENCES families(id),
+
+    -- Who
     user_id UUID REFERENCES users(id),
-    action VARCHAR(100) NOT NULL,                    -- create_family, delete_user, etc.
-    resource_type VARCHAR(50),                       -- families, chores, assignments
+    family_id UUID REFERENCES families(id) ON DELETE CASCADE,
+
+    -- What
+    action VARCHAR(100) NOT NULL,                    -- signup, login, delete_family, etc.
+    resource_type VARCHAR(50),                       -- families, users, subscriptions
     resource_id UUID,
-    changes JSONB,                                   -- before/after values
+
+    -- Context
     ip_address INET,
     user_agent TEXT,
+    request_id UUID,
+
+    -- Changes (for update actions)
+    changes JSONB,
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_audit_family ON audit_logs(family_id, created_at DESC);
 CREATE INDEX idx_audit_user ON audit_logs(user_id, created_at DESC);
+CREATE INDEX idx_audit_action ON audit_logs(action, created_at DESC);
+```
+
+---
+
+## Family Databases
+
+### Schema: Family Tables
+
+Each family database contains **all 120+ feature tables** from the existing Python backend.
+
+**No changes needed!** The existing schema works as-is because:
+- No family_id columns needed
+- No RLS policies needed
+- No cross-family queries
+- Entire database belongs to one family
+
+### Example: Existing Tables
+
+```sql
+-- Users table (family-specific profiles)
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    username VARCHAR(50) UNIQUE NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    age INTEGER,
+    is_parent BOOLEAN DEFAULT false,
+    total_points INTEGER DEFAULT 0,
+    avatar_url VARCHAR(255),
+    preferences JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Chores table
+CREATE TABLE chores (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    base_points INTEGER DEFAULT 10,
+    category VARCHAR(50),
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Assignments table
+CREATE TABLE assignments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    chore_id UUID REFERENCES chores(id),
+    assigned_to UUID REFERENCES users(id),
+    due_date TIMESTAMPTZ,
+    status VARCHAR(20) DEFAULT 'pending',
+    points_earned INTEGER,
+    verified_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ... 117 more tables exactly as they exist now
+```
+
+**Migration is simple**:
+1. Export existing `gamull_chores` database
+2. Rename to `family_gamull`
+3. Done!
+
+---
+
+## Database Provisioning
+
+### Automatic Provisioning on Signup
+
+```go
+package database
+
+import (
+    "context"
+    "fmt"
+    "github.com/jackc/pgx/v5/pgxpool"
+)
+
+type Provisioner struct {
+    platformDB    *pgxpool.Pool
+    dbHost        string
+    dbPort        int
+    adminUser     string
+    adminPassword string
+}
+
+// ProvisionFamilyDatabase creates a new database for a family
+func (p *Provisioner) ProvisionFamilyDatabase(ctx context.Context, familyID uuid.UUID, slug string) error {
+    dbName := fmt.Sprintf("family_%s", slug)
+
+    // 1. Create database
+    _, err := p.platformDB.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName))
+    if err != nil {
+        return fmt.Errorf("create database: %w", err)
+    }
+
+    // 2. Connect to new database
+    connString := fmt.Sprintf("postgresql://%s:%s@%s:%d/%s",
+        p.adminUser, p.adminPassword, p.dbHost, p.dbPort, dbName)
+    familyDB, err := pgxpool.New(ctx, connString)
+    if err != nil {
+        return fmt.Errorf("connect to family db: %w", err)
+    }
+    defer familyDB.Close()
+
+    // 3. Run schema migrations
+    if err := p.runMigrations(ctx, familyDB); err != nil {
+        return fmt.Errorf("run migrations: %w", err)
+    }
+
+    // 4. Create default data (e.g., default chore categories)
+    if err := p.seedDefaultData(ctx, familyDB); err != nil {
+        return fmt.Errorf("seed data: %w", err)
+    }
+
+    // 5. Update platform database with connection info
+    _, err = p.platformDB.Exec(ctx, `
+        UPDATE families
+        SET db_host = $1, db_port = $2, db_name = $3
+        WHERE id = $4
+    `, p.dbHost, p.dbPort, dbName, familyID)
+
+    return err
+}
+
+// runMigrations executes all schema migrations on family DB
+func (p *Provisioner) runMigrations(ctx context.Context, db *pgxpool.Pool) error {
+    // Use golang-migrate or similar
+    // Read all .sql files from migrations/family_schema/
+    // Execute in order
+    return nil
+}
+```
+
+### Deprovisioning (Account Deletion)
+
+```go
+// DeprovisionFamilyDatabase handles account deletion
+func (p *Provisioner) DeprovisionFamilyDatabase(ctx context.Context, familyID uuid.UUID) error {
+    // 1. Get database name from platform DB
+    var dbName string
+    err := p.platformDB.QueryRow(ctx, `
+        SELECT db_name FROM families WHERE id = $1
+    `, familyID).Scan(&dbName)
+    if err != nil {
+        return err
+    }
+
+    // 2. Backup before deleting (compliance requirement)
+    if err := p.backupDatabase(ctx, dbName); err != nil {
+        return fmt.Errorf("backup failed: %w", err)
+    }
+
+    // 3. Terminate all connections
+    _, err = p.platformDB.Exec(ctx, fmt.Sprintf(`
+        SELECT pg_terminate_backend(pg_stat_activity.pid)
+        FROM pg_stat_activity
+        WHERE pg_stat_activity.datname = '%s'
+          AND pid <> pg_backend_pid()
+    `, dbName))
+
+    // 4. Drop database
+    _, err = p.platformDB.Exec(ctx, fmt.Sprintf("DROP DATABASE %s", dbName))
+    if err != nil {
+        return fmt.Errorf("drop database: %w", err)
+    }
+
+    // 5. Soft delete family record
+    _, err = p.platformDB.Exec(ctx, `
+        UPDATE families SET deleted_at = NOW() WHERE id = $1
+    `, familyID)
+
+    return err
+}
+```
+
+---
+
+## Connection Management
+
+### Connection Pool Cache
+
+```go
+package database
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/google/uuid"
+)
+
+// FamilyConnectionManager manages database connections for families
+type FamilyConnectionManager struct {
+    platformDB *pgxpool.Pool
+    pools      sync.Map  // map[uuid.UUID]*pgxpool.Pool
+    mu         sync.RWMutex
+}
+
+// GetFamilyDB returns a connection pool for the family's database
+func (m *FamilyConnectionManager) GetFamilyDB(ctx context.Context, familyID uuid.UUID) (*pgxpool.Pool, error) {
+    // Check cache
+    if pool, ok := m.pools.Load(familyID); ok {
+        return pool.(*pgxpool.Pool), nil
+    }
+
+    // Not in cache, load from platform DB
+    var dbHost string
+    var dbPort int
+    var dbName string
+
+    err := m.platformDB.QueryRow(ctx, `
+        SELECT db_host, db_port, db_name
+        FROM families
+        WHERE id = $1 AND deleted_at IS NULL
+    `, familyID).Scan(&dbHost, &dbPort, &dbName)
+
+    if err != nil {
+        return nil, fmt.Errorf("family not found: %w", err)
+    }
+
+    // Create connection pool
+    connString := fmt.Sprintf("postgresql://housepoints_app:password@%s:%d/%s",
+        dbHost, dbPort, dbName)
+
+    pool, err := pgxpool.New(ctx, connString)
+    if err != nil {
+        return nil, fmt.Errorf("connect to family db: %w", err)
+    }
+
+    // Cache for future requests
+    m.pools.Store(familyID, pool)
+
+    return pool, nil
+}
+
+// GetFamilyDBBySlug is a convenience method for middleware
+func (m *FamilyConnectionManager) GetFamilyDBBySlug(ctx context.Context, slug string) (*pgxpool.Pool, error) {
+    var familyID uuid.UUID
+    err := m.platformDB.QueryRow(ctx, `
+        SELECT id FROM families WHERE slug = $1 AND deleted_at IS NULL
+    `, slug).Scan(&familyID)
+
+    if err != nil {
+        return nil, fmt.Errorf("family not found: %w", err)
+    }
+
+    return m.GetFamilyDB(ctx, familyID)
+}
+
+// CloseAll closes all family connection pools
+func (m *FamilyConnectionManager) CloseAll() {
+    m.pools.Range(func(key, value interface{}) bool {
+        pool := value.(*pgxpool.Pool)
+        pool.Close()
+        return true
+    })
+}
+```
+
+### Middleware Integration
+
+```go
+package middleware
+
+import (
+    "net/http"
+    "strings"
+    "github.com/gin-gonic/gin"
+)
+
+func FamilyDatabaseMiddleware(connManager *database.FamilyConnectionManager, baseDomain string) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // Extract family slug from subdomain
+        host := c.Request.Host
+        slug := extractSlug(host, baseDomain)
+
+        if slug == "" {
+            c.JSON(http.StatusBadRequest, gin.H{
+                "error": "Please access via your family subdomain (e.g., yourfamily.housepoints.ai)",
+            })
+            c.Abort()
+            return
+        }
+
+        // Get family's database connection
+        familyDB, err := connManager.GetFamilyDBBySlug(c.Request.Context(), slug)
+        if err != nil {
+            c.JSON(http.StatusNotFound, gin.H{
+                "error": "Family not found",
+                "slug":  slug,
+            })
+            c.Abort()
+            return
+        }
+
+        // Store in context for handlers
+        c.Set("family_slug", slug)
+        c.Set("family_db", familyDB)
+
+        c.Next()
+    }
+}
+
+func extractSlug(host, baseDomain string) string {
+    // Remove port
+    if idx := strings.Index(host, ":"); idx != -1 {
+        host = host[:idx]
+    }
+
+    // Check if subdomain exists
+    if !strings.HasSuffix(host, "."+baseDomain) {
+        return ""
+    }
+
+    slug := strings.TrimSuffix(host, "."+baseDomain)
+
+    // Filter out reserved subdomains
+    reserved := map[string]bool{
+        "api": true, "www": true, "app": true,
+        "admin": true, "staging": true,
+    }
+
+    if reserved[slug] {
+        return ""
+    }
+
+    return slug
+}
 ```
 
 ---
 
 ## Migration Strategy
 
-### Phase 1: Add Multi-Tenant Tables (Week 1)
-```sql
--- New platform tables
-CREATE TABLE families (...);
-CREATE TABLE users (...);              -- New global users
-CREATE TABLE family_members (...);
-CREATE TABLE family_settings (...);
-CREATE TABLE subscriptions (...);
+### Phase 1: Platform Database Setup (Week 1)
 
--- Create Gamull family as first tenant
-INSERT INTO families (id, slug, name, plan)
-VALUES ('uuid-gamull', 'gamull', 'The Gamull Family', 'premium');
+```sql
+-- Create platform database
+CREATE DATABASE housepoints_platform;
+
+-- Connect and create tables
+\c housepoints_platform
+
+-- Create all platform tables
+-- (families, users, family_memberships, subscriptions, etc.)
 ```
 
-### Phase 2: Migrate Existing Users (Week 2)
-```sql
--- Rename current users table
-ALTER TABLE users RENAME TO legacy_user_profiles;
+### Phase 2: Migrate Gamull Family (Week 2)
 
--- Create new global users table
-CREATE TABLE users (...);
-
--- Migrate: Create global user for each legacy user
-INSERT INTO users (id, email, username, password_hash, first_name, last_name)
-SELECT
-    id,
-    COALESCE(email, username || '@placeholder.gamull.com'),
-    username,
-    'MIGRATED_' || id,  -- Reset passwords, require password reset
-    split_part(display_name, ' ', 1),
-    split_part(display_name, ' ', 2)
-FROM legacy_user_profiles;
-
--- Create family memberships for all Gamull users
-INSERT INTO family_members (family_id, user_id, role, display_name)
-SELECT
-    'uuid-gamull',
-    id,
-    CASE WHEN is_parent THEN 'parent' ELSE 'child' END,
-    display_name
-FROM legacy_user_profiles;
-```
-
-### Phase 3: Add family_id to Feature Tables (Week 3-4)
-```sql
--- For each of 120+ tables:
-ALTER TABLE chores ADD COLUMN family_id UUID;
-
--- Backfill with Gamull family ID
-UPDATE chores SET family_id = 'uuid-gamull';
-
--- Make NOT NULL after backfill
-ALTER TABLE chores ALTER COLUMN family_id SET NOT NULL;
-
--- Add foreign key
-ALTER TABLE chores ADD CONSTRAINT chores_family_fkey
-    FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE;
-
--- Add index
-CREATE INDEX idx_chores_family ON chores(family_id);
-
--- Enable RLS
-ALTER TABLE chores ENABLE ROW LEVEL SECURITY;
-CREATE POLICY chores_family_isolation ON chores
-    USING (family_id = current_setting('app.current_family_id')::UUID);
-```
-
-**Automation**: Create migration script to apply pattern to all tables
 ```bash
-./scripts/add-family-id.sh chores
-./scripts/add-family-id.sh assignments
-./scripts/add-family-id.sh rewards
-# ... repeat for all 120+ tables
+# 1. Backup existing database
+pg_dump -h 10.1.10.20 -U postgres gamull_chores > gamull_backup.sql
+
+# 2. Create new family database
+psql -h 10.1.10.20 -U postgres -c "CREATE DATABASE family_gamull"
+
+# 3. Restore into new database
+psql -h 10.1.10.20 -U postgres -d family_gamull < gamull_backup.sql
+
+# 4. Register in platform database
+psql -h 10.1.10.20 -U postgres -d housepoints_platform <<EOF
+INSERT INTO families (id, slug, name, plan, db_host, db_port, db_name)
+VALUES (
+    uuid_generate_v4(),
+    'gamull',
+    'The Gamull Family',
+    'premium',
+    '10.1.10.20',
+    5432,
+    'family_gamull'
+);
+EOF
+
+# 5. Create user accounts in platform DB
+# (Migrate users from family_gamull.users to housepoints_platform.users)
 ```
 
-### Phase 4: Test & Validate (Week 5)
-- Create test family "smith"
-- Verify data isolation
-- Test RLS policies
-- Ensure no cross-family data leaks
-- Performance testing with family_id indexes
+### Phase 3: Database Provisioning Automation (Week 3)
 
----
-
-## Security & Isolation
-
-### Row-Level Security (RLS)
-
-**Every family-scoped table gets RLS policy**:
-
-```sql
--- Enable RLS on table
-ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users can only see their family's data
-CREATE POLICY {table}_family_isolation ON {table_name}
-    USING (family_id = current_setting('app.current_family_id')::UUID);
-
--- Policy: Platform admins can see all
-CREATE POLICY {table}_platform_admin ON {table_name}
-    USING (current_setting('app.user_role', true) = 'platform_admin');
-```
-
-**Application Layer**:
 ```go
-// Middleware sets family context for every request
-func FamilyMiddleware(c *gin.Context) {
-    family := extractFamilyFromSubdomain(c.Request.Host)
+// Implement ProvisionFamilyDatabase function
+// Test with new test family
 
-    // Set PostgreSQL session variable
-    db.Exec("SET app.current_family_id = $1", family.ID)
+func TestFamilyProvisioning(t *testing.T) {
+    provisioner := database.NewProvisioner(platformDB, ...)
 
-    // All subsequent queries automatically filtered by RLS
-    c.Next()
+    // Create test family
+    familyID := uuid.New()
+    err := provisioner.ProvisionFamilyDatabase(ctx, familyID, "test-family")
+    assert.NoError(t, err)
+
+    // Verify database exists
+    var exists bool
+    platformDB.QueryRow(`
+        SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = 'family_test-family')
+    `).Scan(&exists)
+    assert.True(t, exists)
+
+    // Clean up
+    provisioner.DeprovisionFamilyDatabase(ctx, familyID)
 }
 ```
 
-### Additional Security
+### Phase 4: Production Deployment (Week 4)
 
-**Connection Pooling**:
-- Separate connection per family context
-- Prevents session variable cross-contamination
-
-**Foreign Key Cascades**:
-```sql
--- Deleting family cascades to all related data
-REFERENCES families(id) ON DELETE CASCADE
+```bash
+# 1. Deploy Go application with family provisioning
+# 2. Point staging.housepoints.ai to Go backend
+# 3. Test signup flow creates database
+# 4. Verify gamull.housepoints.ai connects to family_gamull
+# 5. Monitor database connections and performance
 ```
-
-**Soft Deletes**:
-- Never hard delete families
-- Use `deleted_at` timestamp
-- Allows data recovery and compliance
 
 ---
 
-## Indexes & Performance
+## Operations & Management
 
-### Standard Indexes (Every Table)
+### Backup Strategy
 
-```sql
--- Primary lookup
-CREATE INDEX idx_{table}_family ON {table}(family_id)
-    WHERE deleted_at IS NULL;
+**Per-Family Backups**:
+```bash
+#!/bin/bash
+# backup-family.sh
 
--- Time-based queries
-CREATE INDEX idx_{table}_family_created ON {table}(family_id, created_at DESC);
+FAMILY_SLUG=$1
+DB_NAME="family_${FAMILY_SLUG}"
+BACKUP_DIR="/backups/families/${FAMILY_SLUG}"
+DATE=$(date +%Y%m%d_%H%M%S)
 
--- User-scoped queries
-CREATE INDEX idx_{table}_family_user ON {table}(family_id, user_id)
-    WHERE deleted_at IS NULL;
+mkdir -p $BACKUP_DIR
+
+# Full database backup
+pg_dump -h 10.1.10.20 -U postgres -Fc $DB_NAME > \
+    $BACKUP_DIR/${DB_NAME}_${DATE}.dump
+
+# Compress
+gzip $BACKUP_DIR/${DB_NAME}_${DATE}.dump
+
+# Upload to S3
+aws s3 cp $BACKUP_DIR/${DB_NAME}_${DATE}.dump.gz \
+    s3://housepoints-backups/families/${FAMILY_SLUG}/
+
+# Keep only last 30 days locally
+find $BACKUP_DIR -name "*.dump.gz" -mtime +30 -delete
 ```
 
-### Query Patterns
+**Automated Cron**:
+```cron
+# Daily backups at 2 AM
+0 2 * * * /scripts/backup-all-families.sh
 
-**Efficient** (uses index):
-```sql
-SELECT * FROM chores
-WHERE family_id = 'uuid-gamull'
-  AND deleted_at IS NULL
-ORDER BY created_at DESC;
+# Weekly full backup on Sunday
+0 3 * * 0 /scripts/backup-all-families.sh --full
 ```
 
-**Inefficient** (full table scan):
-```sql
--- Missing family_id filter
-SELECT * FROM chores WHERE title LIKE '%clean%';
+### Monitoring
+
+**Database Health Check**:
+```go
+func (m *FamilyConnectionManager) HealthCheck(ctx context.Context) map[string]bool {
+    health := make(map[string]bool)
+
+    // Get all families from platform DB
+    rows, _ := m.platformDB.Query(ctx, `
+        SELECT id, slug FROM families WHERE deleted_at IS NULL
+    `)
+    defer rows.Close()
+
+    for rows.Next() {
+        var id uuid.UUID
+        var slug string
+        rows.Scan(&id, &slug)
+
+        // Test connection to family DB
+        familyDB, err := m.GetFamilyDB(ctx, id)
+        if err != nil {
+            health[slug] = false
+            continue
+        }
+
+        // Ping database
+        err = familyDB.Ping(ctx)
+        health[slug] = (err == nil)
+    }
+
+    return health
+}
 ```
 
-### Performance Targets
+### Database Metrics
 
-- **Single family query**: < 10ms
-- **Index scan ratio**: > 99%
-- **Table size with 10k families**: ~10GB for chores table
-- **Query cost with proper indexes**: O(log n) per family
+**Per-Family Statistics**:
+```sql
+-- Get size of each family database
+SELECT
+    datname AS database,
+    pg_size_pretty(pg_database_size(datname)) AS size
+FROM pg_database
+WHERE datname LIKE 'family_%'
+ORDER BY pg_database_size(datname) DESC;
+
+-- Active connections per family database
+SELECT
+    datname AS database,
+    count(*) AS connections
+FROM pg_stat_activity
+WHERE datname LIKE 'family_%'
+GROUP BY datname
+ORDER BY connections DESC;
+```
+
+**Storage Alerts**:
+```go
+// Alert if family DB exceeds plan limits
+func (m *FamilyConnectionManager) CheckStorageLimits(ctx context.Context) error {
+    rows, _ := m.platformDB.Query(ctx, `
+        SELECT f.id, f.slug, f.plan, f.db_name
+        FROM families f
+        WHERE f.deleted_at IS NULL
+    `)
+    defer rows.Close()
+
+    for rows.Next() {
+        var id uuid.UUID
+        var slug, plan, dbName string
+        rows.Scan(&id, &slug, &plan, &dbName)
+
+        // Get database size
+        var sizeMB int
+        m.platformDB.QueryRow(ctx, `
+            SELECT pg_database_size($1) / 1024 / 1024
+        `, dbName).Scan(&sizeMB)
+
+        // Check against plan limits
+        limit := getPlanStorageLimit(plan)  // free: 100MB, premium: 1GB, enterprise: 10GB
+
+        if sizeMB > limit {
+            // Send alert email
+            alertFamilyStorageExceeded(slug, sizeMB, limit)
+        }
+    }
+
+    return nil
+}
+```
 
 ---
 
-## Future Considerations
+## Cost Analysis
 
-### Scaling Beyond 10,000 Families
+### Year 1 (100 Families)
 
-**Option 1: Sharding by Family ID**
-- Split database into shards (e.g., 10 shards = 1,000 families each)
-- Route queries based on `family_id % 10`
-- Requires connection pooling changes
+**Managed PostgreSQL (DigitalOcean/AWS RDS)**:
+- Small DB (1GB storage, 1vCPU): $7/month each
+- 100 families × $7 = $700/month
+- Platform DB: $10/month (tiny)
+- **Total: $710/month = $8,520/year**
 
-**Option 2: Separate Databases for Enterprise**
-- Large families (>100 users) get dedicated database
-- Update `families` table: `database_url` column
+**Self-Hosted (More Control)**:
+- PostgreSQL server (4GB RAM, 2vCPU): $40/month
+- 100 databases on one server (up to 500 possible)
+- Backups to S3: $20/month
+- **Total: $60/month = $720/year**
 
-**Option 3: Read Replicas**
-- Read-heavy families use replica
-- Write-heavy stay on primary
+### Year 3 (1,000 Families)
 
-### Data Retention
+**Managed**: $7,010/month = $84,120/year
+**Self-Hosted**: 2 servers × $40 = $80/month + $50 backups = $1,560/year
 
-**Policy by Plan**:
-- Free: 90 days history
-- Premium: 1 year history
-- Enterprise: Unlimited
+### Recommended Pricing
 
-**Implementation**:
+To cover costs and provide 50% profit margin:
+
+**Free Tier** (7-day trial):
+- 2 parents, 5 children max
+- 100MB storage
+- Basic features only
+
+**Premium** ($15/month):
+- Unlimited family members
+- 1GB storage
+- All features
+- Email support
+
+**Enterprise** ($50/month):
+- Unlimited everything
+- 10GB storage
+- Priority support
+- Custom integrations
+
+**Revenue Model (100 families)**:
+- 20 free trials → $0
+- 70 premium → $1,050/month
+- 10 enterprise → $500/month
+- **Total: $1,550/month revenue**
+- **Profit: $1,550 - $710 = $840/month**
+
+---
+
+## Security Considerations
+
+### Connection Security
+
+**Database User Permissions**:
 ```sql
-CREATE TABLE data_retention_policies (
-    family_id UUID PRIMARY KEY REFERENCES families(id),
-    chores_retention_days INTEGER NOT NULL DEFAULT 90,
-    points_retention_days INTEGER NOT NULL DEFAULT 365,
-    audit_retention_days INTEGER NOT NULL DEFAULT 730
-);
+-- Create application user with limited permissions
+CREATE USER housepoints_app WITH PASSWORD 'secure_password';
 
--- Automated cleanup job
-DELETE FROM assignments
-WHERE family_id = $1
-  AND created_at < NOW() - INTERVAL '90 days'
-  AND family_id IN (SELECT family_id FROM families WHERE plan = 'free');
+-- Grant only necessary permissions
+GRANT CONNECT ON DATABASE family_gamull TO housepoints_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO housepoints_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO housepoints_app;
+
+-- Revoke dangerous permissions
+REVOKE CREATE ON SCHEMA public FROM housepoints_app;
+REVOKE DROP ON ALL TABLES IN SCHEMA public FROM housepoints_app;
+```
+
+### Encryption
+
+**At Rest**:
+- Enable PostgreSQL encryption (LUKS/dm-crypt)
+- Encrypt backups before uploading to S3
+- Store sensitive data (SSN, credit cards) separately with field-level encryption
+
+**In Transit**:
+- Require SSL/TLS for all database connections
+- Use certificate authentication for application
+
+**Connection String Security**:
+```go
+// Store DB passwords encrypted in platform database
+func (m *FamilyConnectionManager) getConnectionString(familyID uuid.UUID) (string, error) {
+    var encryptedPassword string
+    err := m.platformDB.QueryRow(`
+        SELECT db_password_encrypted FROM families WHERE id = $1
+    `, familyID).Scan(&encryptedPassword)
+
+    // Decrypt using KMS or similar
+    password := decrypt(encryptedPassword)
+
+    return fmt.Sprintf("postgresql://app:%s@%s:%d/%s?sslmode=require",
+        password, host, port, dbName), nil
+}
+```
+
+### Audit Logging
+
+Log all database operations that touch sensitive data:
+```go
+func (m *FamilyConnectionManager) AuditQuery(ctx context.Context, familyID uuid.UUID, query string, user uuid.UUID) {
+    m.platformDB.Exec(ctx, `
+        INSERT INTO audit_logs (family_id, user_id, action, metadata)
+        VALUES ($1, $2, 'database_query', $3)
+    `, familyID, user, map[string]interface{}{
+        "query": query,
+        "timestamp": time.Now(),
+    })
+}
 ```
 
 ---
 
 ## Summary
 
+### Architecture Benefits
+
+✅ **Perfect Data Isolation**: Each family's data is physically separated
+✅ **Compliance Ready**: Easy to prove FERPA/COPPA compliance
+✅ **Simple Schema**: No family_id columns needed
+✅ **Easy Migration**: Existing schema works as-is
+✅ **Scalable**: Can handle 10,000+ families
+✅ **Cost Effective**: Self-hosting keeps costs under $100/month for 1,000 families
+
 ### Key Design Decisions
 
-1. **Shared Database**: Cost-effective for 10k families, centralized management
-2. **Family ID Pattern**: Every table gets `family_id`, RLS for isolation
-3. **Global Users**: Users can manage multiple families (divorced parents, nannies)
-4. **Slug-Based Routing**: Family slug in subdomain for clean UX
-5. **Backward Compatible**: Gamull family migrates seamlessly, existing data preserved
+1. **Platform DB for Routing**: Small, fast, handles authentication and routing
+2. **Family DB Per Family**: Complete isolation, existing schema unchanged
+3. **Connection Pool Cache**: Reuse connections, minimal overhead
+4. **Automated Provisioning**: New family = new database in seconds
+5. **Soft Deletes**: Compliance and data recovery
+6. **Per-Family Backups**: Restore individual families without affecting others
 
-### Tables Created
+### Migration Path
 
-**New Tables (8)**:
-- `families`
-- `users` (global identity)
-- `family_members`
-- `family_settings`
-- `subscriptions`
-- `platform_analytics`
-- `audit_logs`
-- `family_member_points`
+**Week 1**: Platform database setup
+**Week 2**: Migrate Gamull as `family_gamull`
+**Week 3**: Implement provisioning automation
+**Week 4**: Test and deploy to production
 
-**Modified Tables (120+)**:
-- All existing feature tables get `family_id` column
-- All existing tables get RLS policies
-- All existing tables get family_id indexes
+### Next Steps
 
-### Migration Effort
-
-- **Database changes**: 2-3 weeks
-- **Application changes**: 4-6 weeks
-- **Testing & validation**: 1-2 weeks
-- **Total**: 2-3 months to production-ready
+1. Create platform database schema migration
+2. Implement FamilyConnectionManager
+3. Build database provisioning service
+4. Write integration tests
+5. Set up backup automation
+6. Deploy to staging
 
 ---
 
-## Next Steps
+## Appendix: Database Provisioning Script
 
-1. Create migration files for new tables
-2. Write `add-family-id.sh` automation script
-3. Implement RLS policies template
-4. Set up family context middleware in Go
-5. Test with 2 families (gamull + test)
-6. Performance benchmark with 100 simulated families
+```bash
+#!/bin/bash
+# provision-family-db.sh
+
+set -e
+
+FAMILY_SLUG=$1
+DB_NAME="family_${FAMILY_SLUG}"
+DB_HOST="10.1.10.20"
+DB_PORT=5432
+ADMIN_USER="postgres"
+
+if [ -z "$FAMILY_SLUG" ]; then
+    echo "Usage: $0 <family-slug>"
+    exit 1
+fi
+
+echo "Provisioning database for family: $FAMILY_SLUG"
+
+# 1. Create database
+PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $ADMIN_USER <<EOF
+CREATE DATABASE $DB_NAME;
+EOF
+
+# 2. Run migrations
+PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $ADMIN_USER -d $DB_NAME \
+    -f migrations/family_schema/001_create_tables.sql
+
+# 3. Create application user and grant permissions
+PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $ADMIN_USER -d $DB_NAME <<EOF
+CREATE USER housepoints_app_${FAMILY_SLUG} WITH PASSWORD '$(openssl rand -base64 32)';
+GRANT CONNECT ON DATABASE $DB_NAME TO housepoints_app_${FAMILY_SLUG};
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO housepoints_app_${FAMILY_SLUG};
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO housepoints_app_${FAMILY_SLUG};
+EOF
+
+echo "✅ Database $DB_NAME provisioned successfully"
+```
