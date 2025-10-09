@@ -81,8 +81,8 @@ func CreateChore(c *gin.Context) {
 	}
 
 	// Check if user is a parent
-	claims, _ := middleware.GetUserClaims(c)
-	if !claims.IsParent {
+	isParent, _ := middleware.GetAuthIsParent(c)
+	if !isParent {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only parents can create chores"})
 		return
 	}
@@ -151,8 +151,8 @@ func UpdateChore(c *gin.Context) {
 	}
 
 	// Check if user is a parent
-	claims, _ := middleware.GetUserClaims(c)
-	if !claims.IsParent {
+	isParent, _ := middleware.GetAuthIsParent(c)
+	if !isParent {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only parents can update chores"})
 		return
 	}
@@ -294,8 +294,8 @@ func DeleteChore(c *gin.Context) {
 	}
 
 	// Check if user is a parent
-	claims, _ := middleware.GetUserClaims(c)
-	if !claims.IsParent {
+	isParent, _ := middleware.GetAuthIsParent(c)
+	if !isParent {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only parents can delete chores"})
 		return
 	}
