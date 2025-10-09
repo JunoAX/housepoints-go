@@ -144,6 +144,9 @@ func main() {
 
 		// Chores endpoints
 		protected.GET("/chores", handlers.ListChores)
+		protected.POST("/chores", handlers.CreateChore)
+		protected.PUT("/chores/:id", handlers.UpdateChore)
+		protected.DELETE("/chores/:id", handlers.DeleteChore)
 
 		// Assignments endpoints (read)
 		protected.GET("/assignments", handlers.ListAssignments)

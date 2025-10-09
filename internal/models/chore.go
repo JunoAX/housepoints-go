@@ -14,6 +14,8 @@ type Chore struct {
 	Instructions         *string    `json:"instructions,omitempty" db:"instructions"`
 	Category             string     `json:"category" db:"category"`
 	BasePoints           int        `json:"base_points" db:"base_points"`
+	BonusEligible        bool       `json:"bonus_eligible" db:"bonus_eligible"`
+	PenaltyPoints        int        `json:"penalty_points" db:"penalty_points"`
 	EstimatedMinutes     *int       `json:"estimated_minutes,omitempty" db:"estimated_minutes"`
 	Difficulty           string     `json:"difficulty" db:"difficulty"`
 	RequiresVerification bool       `json:"requires_verification" db:"requires_verification"`
@@ -27,6 +29,43 @@ type Chore struct {
 	MinAge               int        `json:"min_age" db:"min_age"`
 	AssignmentType       string     `json:"assignment_type" db:"assignment_type"`
 	RotationEligible     bool       `json:"rotation_eligible" db:"rotation_eligible"`
+}
+
+// ChoreCreateRequest is the request body for POST /api/chores
+type ChoreCreateRequest struct {
+	Name                 string   `json:"name" binding:"required"`
+	Description          *string  `json:"description,omitempty"`
+	Instructions         *string  `json:"instructions,omitempty"`
+	Category             string   `json:"category"`
+	BasePoints           int      `json:"base_points"`
+	BonusEligible        bool     `json:"bonus_eligible"`
+	PenaltyPoints        int      `json:"penalty_points"`
+	EstimatedMinutes     *int     `json:"estimated_minutes,omitempty"`
+	Difficulty           string   `json:"difficulty"`
+	Frequency            *string  `json:"frequency,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+	RotationEligible     bool     `json:"rotation_eligible"`
+	RequiresPhoto        bool     `json:"requires_photo"`
+	RequiresVerification bool     `json:"requires_verification"`
+}
+
+// ChoreUpdateRequest is the request body for PUT/PATCH /api/chores/:id
+type ChoreUpdateRequest struct {
+	Name                 *string  `json:"name,omitempty"`
+	Description          *string  `json:"description,omitempty"`
+	Instructions         *string  `json:"instructions,omitempty"`
+	Category             *string  `json:"category,omitempty"`
+	BasePoints           *int     `json:"base_points,omitempty"`
+	BonusEligible        *bool    `json:"bonus_eligible,omitempty"`
+	PenaltyPoints        *int     `json:"penalty_points,omitempty"`
+	EstimatedMinutes     *int     `json:"estimated_minutes,omitempty"`
+	Difficulty           *string  `json:"difficulty,omitempty"`
+	Frequency            *string  `json:"frequency,omitempty"`
+	Active               *bool    `json:"active,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+	RotationEligible     *bool    `json:"rotation_eligible,omitempty"`
+	RequiresPhoto        *bool    `json:"requires_photo,omitempty"`
+	RequiresVerification *bool    `json:"requires_verification,omitempty"`
 }
 
 // ChoreListResponse is a simplified version for list endpoints
