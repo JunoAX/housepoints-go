@@ -88,3 +88,11 @@ type AssignmentDetailResponse struct {
 	AssignedUser      *AssignmentUserInfo  `json:"assigned_user,omitempty"`
 	AssignedByUser    *AssignmentUserInfo  `json:"assigned_by_user,omitempty"`
 }
+
+// AssignmentCreateRequest is the request body for POST /api/assignments
+type AssignmentCreateRequest struct {
+	ChoreID       uuid.UUID  `json:"chore_id" binding:"required"`
+	AssignedTo    *uuid.UUID `json:"assigned_to,omitempty"`
+	PointsOffered int        `json:"points_offered"`
+	DueDate       *string    `json:"due_date,omitempty"` // ISO date or date-time string
+}

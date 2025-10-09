@@ -153,6 +153,7 @@ func main() {
 		protected.GET("/assignments/:id", handlers.GetAssignment)
 
 		// Assignments endpoints (write)
+		protected.POST("/assignments", handlers.CreateAssignment)
 		protected.POST("/assignments/:id/claim", handlers.ClaimAssignment)
 		protected.POST("/assignments/:id/complete", handlers.CompleteAssignment)
 		protected.POST("/assignments/:id/verify", handlers.VerifyAssignment)
