@@ -49,13 +49,19 @@
 
 ### In Progress Tasks
 
-#### Database Layer (🚧 In Progress)
-- [ ] Create database migrations for multi-tenant schema
-  - [ ] families table with slug, plan, active
-  - [ ] family_settings table
-  - [ ] family_members table (user-to-family relationships)
-  - [ ] Add family_id columns to existing tables
-  - [ ] Create RLS policies for tenant isolation
+#### Database Layer (✅ Complete)
+- [x] Create platform database (housepoints_platform)
+- [x] Create platform schema migration
+  - [x] families table with slug, db connection info
+  - [x] users table (global user accounts)
+  - [x] family_memberships table
+  - [x] subscriptions table
+  - [x] platform_analytics table
+  - [x] audit_logs table
+- [x] Copy gamull_chores → family_gamull database
+- [x] Register Gamull family in platform database
+- [x] Fix TLS certificate for wildcard subdomains
+- [x] Verify wildcard subdomain routing (*.housepoints.ai)
 - [ ] Implement database connection pooling (pgxpool)
 - [ ] Add database health checks
 - [ ] Create migration runner
@@ -178,13 +184,35 @@ curl https://staging.housepoints.ai/health
 curl https://api.housepoints.ai/health
 ```
 
+## Current Database Status
+
+### Platform Database (housepoints_platform)
+- **Location**: 10.1.10.20:5432
+- **Purpose**: Routes requests to family-specific databases
+- **Tables**: families, users, family_memberships, subscriptions, platform_analytics, audit_logs
+- **Status**: ✅ Created and operational
+
+### Family Database (family_gamull)
+- **Location**: 10.1.10.20:5432
+- **Purpose**: Gamull family data (copy of gamull_chores)
+- **Tables**: 124 tables (complete schema)
+- **Status**: ✅ Copied and registered
+- **Registration**: Family ID: 3f32f257-ad42-43d6-ae0a-8e4db9c1ce55
+
+### Legacy Database (gamull_chores)
+- **Location**: 10.1.10.20:5432
+- **Purpose**: Python backend (chores.gamull.com)
+- **Status**: ✅ Untouched, still operational
+- **Backup**: /Users/tom/projects/housepoints-go/backups/gamull_chores_backup_20251007_114918.dump (602KB)
+
 ## Next Session Priorities
 
 ### High Priority (Do First)
-1. Create database migration files for families schema
-2. Implement database connection pooling in main.go
+1. Implement database connection pooling with family routing
+2. Update main.go to connect to platform database
 3. Integrate family middleware into application
 4. Add basic health check with database connectivity
+5. Test end-to-end: subdomain → family lookup → family database connection
 
 ### Medium Priority
 1. Build family signup API endpoint

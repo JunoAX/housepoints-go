@@ -11,8 +11,19 @@ type Family struct {
 	ID        uuid.UUID  `json:"id" db:"id"`
 	Slug      string     `json:"slug" db:"slug"`                 // Unique identifier for subdomain (e.g., "gamull", "smith-nyc")
 	Name      string     `json:"name" db:"name"`                 // Display name (e.g., "The Gamull Family")
+
+	// Database connection info
+	DBHost               string `json:"-" db:"db_host"`
+	DBPort               int    `json:"-" db:"db_port"`
+	DBName               string `json:"-" db:"db_name"`
+	DBUser               string `json:"-" db:"db_user"`
+	DBPasswordEncrypted  string `json:"-" db:"db_password_encrypted"`
+
+	// Subscription
 	Plan      string     `json:"plan" db:"plan"`                 // Subscription plan: "free", "premium", "enterprise"
-	Active    bool       `json:"active" db:"active"`             // Whether family account is active
+	Status    string     `json:"status" db:"status"`             // "trial", "active", "suspended", "cancelled"
+
+	// Metadata
 	CreatedAt time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at" db:"updated_at"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty" db:"deleted_at"` // Soft delete

@@ -6,8 +6,10 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/JunoAX/housepoints-go/internal/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // FamilyContextKey is the key for storing family context
@@ -17,22 +19,14 @@ const (
 	FamilyContextKey contextKey = "family"
 	FamilyIDKey      contextKey = "family_id"
 	FamilySlugKey    contextKey = "family_slug"
+	FamilyDBKey      contextKey = "family_db"
 )
 
 var slugRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 
-// FamilyResolver interface for looking up families by slug
-type FamilyResolver interface {
-	GetFamilyBySlug(ctx context.Context, slug string) (*FamilyInfo, error)
-}
-
-// FamilyInfo contains basic family information for middleware
-type FamilyInfo struct {
-	ID     uuid.UUID
-	Slug   string
-	Name   string
-	Active bool
-	Plan   string
+// FamilyDBProvider interface for getting family database connections
+type FamilyDBProvider interface {
+	GetFamilyDBBySlug(ctx context.Context, slug string) (*pgxpool.Pool, *models.Family, error)
 }
 
 // ExtractFamilySlug extracts the family slug from subdomain
@@ -80,8 +74,8 @@ func ExtractFamilySlug(host string, baseDomain string) string {
 	return slug
 }
 
-// FamilyMiddleware extracts family slug from subdomain and loads family context
-func FamilyMiddleware(resolver FamilyResolver, baseDomain string) gin.HandlerFunc {
+// FamilyMiddleware extracts family slug from subdomain and loads family context + DB connection
+func FamilyMiddleware(dbProvider FamilyDBProvider, baseDomain string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		host := c.Request.Host
 		slug := ExtractFamilySlug(host, baseDomain)
@@ -101,8 +95,8 @@ func FamilyMiddleware(resolver FamilyResolver, baseDomain string) gin.HandlerFun
 			return
 		}
 
-		// Look up family
-		family, err := resolver.GetFamilyBySlug(c.Request.Context(), slug)
+		// Look up family and get database connection
+		familyDB, family, err := dbProvider.GetFamilyDBBySlug(c.Request.Context(), slug)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Family not found",
@@ -113,7 +107,7 @@ func FamilyMiddleware(resolver FamilyResolver, baseDomain string) gin.HandlerFun
 		}
 
 		// Check if family is active
-		if !family.Active {
+		if family.Status != "active" {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": "Family account is inactive",
 			})
@@ -121,10 +115,11 @@ func FamilyMiddleware(resolver FamilyResolver, baseDomain string) gin.HandlerFun
 			return
 		}
 
-		// Store family info in context
+		// Store family info and DB connection in context
 		c.Set(string(FamilyIDKey), family.ID)
 		c.Set(string(FamilySlugKey), family.Slug)
 		c.Set(string(FamilyContextKey), family)
+		c.Set(string(FamilyDBKey), familyDB)
 
 		c.Next()
 	}
@@ -163,6 +158,26 @@ func GetFamilySlug(c *gin.Context) (string, bool) {
 	}
 	slug, ok := val.(string)
 	return slug, ok
+}
+
+// GetFamilyDB retrieves family database connection from context
+func GetFamilyDB(c *gin.Context) (*pgxpool.Pool, bool) {
+	val, exists := c.Get(string(FamilyDBKey))
+	if !exists {
+		return nil, false
+	}
+	db, ok := val.(*pgxpool.Pool)
+	return db, ok
+}
+
+// GetFamily retrieves full family object from context
+func GetFamily(c *gin.Context) (*models.Family, bool) {
+	val, exists := c.Get(string(FamilyContextKey))
+	if !exists {
+		return nil, false
+	}
+	family, ok := val.(*models.Family)
+	return family, ok
 }
 
 // ValidateSlug checks if a slug is valid

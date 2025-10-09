@@ -10,20 +10,79 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JunoAX/housepoints-go/internal/auth"
+	"github.com/JunoAX/housepoints-go/internal/database"
+	"github.com/JunoAX/housepoints-go/internal/handlers"
+	"github.com/JunoAX/housepoints-go/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
 
 var Version = "dev"
 
 func main() {
+	ctx := context.Background()
+
+	// Get database configuration from environment
+	platformDBURL := os.Getenv("PLATFORM_DATABASE_URL")
+	if platformDBURL == "" {
+		// Default for local development / production
+		platformDBURL = "postgres://postgres:HP_Sec2025_O0mZVY90R1Yg8L@10.1.10.20:5432/housepoints_platform?sslmode=disable"
+	}
+
+	// Initialize platform database
+	log.Println("📦 Connecting to platform database...")
+	platformDB, err := database.NewPlatformDB(ctx, platformDBURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to platform database: %v", err)
+	}
+	defer platformDB.Close()
+	log.Println("✅ Platform database connected")
+
+	// Initialize family database manager
+	familyDBManager := database.NewFamilyDBManager(platformDB)
+	defer familyDBManager.Close()
+	log.Println("✅ Family database manager initialized")
+
+	// Initialize JWT service
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is required")
+	}
+	jwtService := auth.NewJWTService(jwtSecret, "housepoints-go")
+	log.Println("✅ JWT service initialized")
+
 	// Initialize Gin
 	r := gin.Default()
 
-	// Health check
+	// Apply family middleware globally
+	baseDomain := os.Getenv("BASE_DOMAIN")
+	if baseDomain == "" {
+		baseDomain = "housepoints.ai"
+	}
+	r.Use(middleware.FamilyMiddleware(familyDBManager, baseDomain))
+
+	// Health check (no family required)
 	r.GET("/health", func(c *gin.Context) {
+		// Check platform DB health
+		dbHealthy := platformDB.Health(ctx) == nil
+
 		c.JSON(200, gin.H{
-			"status":  "healthy",
-			"version": Version,
+			"status":      "healthy",
+			"version":     Version,
+			"db_platform": dbHealthy,
+		})
+	})
+
+	// Detailed health check with pool stats
+	r.GET("/health/detailed", func(c *gin.Context) {
+		dbHealthy := platformDB.Health(ctx) == nil
+		poolStats := familyDBManager.PoolStats()
+
+		c.JSON(200, gin.H{
+			"status":      "healthy",
+			"version":     Version,
+			"db_platform": dbHealthy,
+			"db_pools":    poolStats,
 		})
 	})
 
@@ -44,6 +103,72 @@ func main() {
 		})
 	})
 
+	// Family info endpoint (requires family subdomain)
+	r.GET("/api/family/info", middleware.RequireFamily(), func(c *gin.Context) {
+		family, _ := middleware.GetFamily(c)
+		familyDB, _ := middleware.GetFamilyDB(c)
+
+		// Test query on family database
+		var dbName string
+		err := familyDB.QueryRow(ctx, "SELECT current_database()").Scan(&dbName)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Failed to query family database"})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"family_id":   family.ID,
+			"family_slug": family.Slug,
+			"family_name": family.Name,
+			"plan":        family.Plan,
+			"status":      family.Status,
+			"database":    dbName,
+		})
+	})
+
+	// Authentication endpoints
+	r.POST("/api/auth/login", middleware.RequireFamily(), handlers.Login(jwtService))
+
+	// Protected API routes (require authentication)
+	protected := r.Group("/api")
+	protected.Use(middleware.RequireFamily(), middleware.RequireAuth(jwtService))
+	{
+		// Users endpoints
+		protected.GET("/users", handlers.ListUsers)
+		protected.GET("/users/me", handlers.GetCurrentUser)
+		protected.PATCH("/users/me", handlers.UpdateCurrentUserProfile)
+		protected.PUT("/users/me/preferences", handlers.UpdateCurrentUserPreferences)
+		protected.GET("/users/:id", handlers.GetUser)
+		protected.GET("/users/:id/points", handlers.GetUserPoints)
+		protected.GET("/users/:id/transactions", handlers.GetUserTransactions)
+
+		// Chores endpoints
+		protected.GET("/chores", handlers.ListChores)
+
+		// Assignments endpoints (read)
+		protected.GET("/assignments", handlers.ListAssignments)
+		protected.GET("/assignments/:id", handlers.GetAssignment)
+
+		// Assignments endpoints (write)
+		protected.POST("/assignments/:id/claim", handlers.ClaimAssignment)
+		protected.POST("/assignments/:id/complete", handlers.CompleteAssignment)
+		protected.POST("/assignments/:id/verify", handlers.VerifyAssignment)
+
+		// Rewards endpoints
+		protected.GET("/rewards", handlers.ListRewards)
+		protected.POST("/rewards/:id/redeem", handlers.RedeemReward)
+
+		// Leaderboard endpoints
+		protected.GET("/leaderboard/weekly", handlers.GetWeeklyLeaderboard)
+		protected.GET("/leaderboard/alltime", handlers.GetAllTimeLeaderboard)
+
+		// Family Schedule endpoints
+		protected.GET("/schedule", handlers.GetFamilySchedule)
+	}
+
+	// Demo-only endpoints (for testing without auth)
+	r.GET("/api/demo/chores", middleware.RequireFamily(), middleware.DemoOnly(), handlers.ListChores)
+
 	// Server configuration
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -58,6 +183,7 @@ func main() {
 	// Start server in goroutine
 	go func() {
 		log.Printf("🚀 Server starting on port %s", port)
+		log.Printf("🌐 Base domain: %s", baseDomain)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}
