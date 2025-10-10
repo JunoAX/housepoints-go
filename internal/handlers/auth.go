@@ -547,9 +547,26 @@ func GoogleWebCallback(jwtService *auth.JWTService) gin.HandlerFunc {
 
 		username := userConfig.Username
 
-		// Redirect to family subdomain with token
+		// Parse redirect path - handle both full URLs and paths
+		redirectPath := stateData.RedirectPath
+		if redirectPath == "" {
+			redirectPath = "/dashboard"
+		}
+
+		// If redirectPath contains a full URL, extract just the path
+		if strings.HasPrefix(redirectPath, "http://") || strings.HasPrefix(redirectPath, "https://") {
+			parsedURL, err := url.Parse(redirectPath)
+			if err == nil {
+				redirectPath = parsedURL.Path
+				if parsedURL.RawQuery != "" {
+					redirectPath += "?" + parsedURL.RawQuery
+				}
+			}
+		}
+
+		// Redirect to family subdomain with user info
 		redirectURL := fmt.Sprintf("https://%s.housepoints.ai%s?email=%s&username=%s",
-			familySlug, stateData.RedirectPath, url.QueryEscape(email), username)
+			familySlug, redirectPath, url.QueryEscape(email), username)
 
 		c.Redirect(http.StatusTemporaryRedirect, redirectURL)
 	}
