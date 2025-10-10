@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,8 +17,10 @@ import (
 
 	"github.com/JunoAX/housepoints-go/internal/auth"
 	"github.com/JunoAX/housepoints-go/internal/middleware"
+	"github.com/JunoAX/housepoints-go/internal/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -537,15 +540,94 @@ func GoogleWebCallback(jwtService *auth.JWTService) gin.HandlerFunc {
 			platformDBURL = "postgres://postgres:HP_Sec2025_O0mZVY90R1Yg8L@10.1.10.20:5432/housepoints_platform?sslmode=disable"
 		}
 
-		// This is a callback handler, we need to get the family DB
-		// For now, redirect with a temporary token that can be exchanged
-		// In production, this should use the family middleware
+		ctx := c.Request.Context()
+		platformPool, err := pgxpool.New(ctx, platformDBURL)
+		if err != nil {
+			log.Printf("Failed to connect to platform database: %v", err)
+			c.Redirect(http.StatusTemporaryRedirect, "/?error=database_connection_failed")
+			return
+		}
+		defer platformPool.Close()
 
-		// TODO: Implement proper family resolution
-		// For now, generate a JWT with just the user info and redirect
-		// The frontend will then make a request with proper family context
+		// Query for family
+		var family models.Family
+		err = platformPool.QueryRow(ctx, `
+			SELECT id, slug, name, db_host, db_port, db_name, db_user, db_password_encrypted,
+			       plan, status, created_at, updated_at
+			FROM families
+			WHERE slug = $1 AND status = 'active' AND deleted_at IS NULL
+		`, familySlug).Scan(
+			&family.ID, &family.Slug, &family.Name,
+			&family.DBHost, &family.DBPort, &family.DBName, &family.DBUser, &family.DBPasswordEncrypted,
+			&family.Plan, &family.Status, &family.CreatedAt, &family.UpdatedAt,
+		)
+		if err != nil {
+			log.Printf("Family not found or inactive: %s - %v", familySlug, err)
+			c.Redirect(http.StatusTemporaryRedirect, "/?error=family_not_found")
+			return
+		}
 
+		// Build family database connection string
+		familyDBURL := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+			family.DBUser, family.DBPasswordEncrypted, family.DBHost, family.DBPort, family.DBName)
+
+		// Connect to family database
+		familyPool, err := pgxpool.New(ctx, familyDBURL)
+		if err != nil {
+			log.Printf("Failed to connect to family database %s: %v", family.DBName, err)
+			c.Redirect(http.StatusTemporaryRedirect, "/?error=family_database_failed")
+			return
+		}
+		defer familyPool.Close()
+
+		// Get username from authorized emails config
 		username := userConfig.Username
+
+		// Check if user exists
+		var userID uuid.UUID
+		var isParent bool
+		err = familyPool.QueryRow(ctx, `
+			SELECT id, is_parent FROM users WHERE username = $1
+		`, username).Scan(&userID, &isParent)
+
+		if err != nil {
+			// User doesn't exist, create them
+			userID = uuid.New()
+			isParent = userConfig.IsParent
+
+			_, err = familyPool.Exec(ctx, `
+				INSERT INTO users (id, username, email, is_parent, family_id, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+			`, userID, username, email, isParent, family.ID)
+
+			if err != nil {
+				log.Printf("Failed to create user %s in family %s: %v", username, family.Slug, err)
+				c.Redirect(http.StatusTemporaryRedirect, "/?error=user_creation_failed")
+				return
+			}
+
+			log.Printf("Created new user %s (%s) in family %s", username, userID, family.Slug)
+		} else {
+			// User exists, update email if changed
+			_, err = familyPool.Exec(ctx, `
+				UPDATE users SET email = $1, updated_at = NOW() WHERE id = $2
+			`, email, userID)
+
+			if err != nil {
+				log.Printf("Failed to update user %s: %v", username, err)
+				// Continue anyway, this is non-critical
+			}
+
+			log.Printf("User %s (%s) logged in to family %s", username, userID, family.Slug)
+		}
+
+		// Generate JWT token
+		token, err := jwtService.GenerateToken(userID, family.ID, username, isParent)
+		if err != nil {
+			log.Printf("Failed to generate JWT token for user %s: %v", username, err)
+			c.Redirect(http.StatusTemporaryRedirect, "/?error=token_generation_failed")
+			return
+		}
 
 		// Parse redirect path - handle both full URLs and paths
 		redirectPath := stateData.RedirectPath
@@ -564,10 +646,11 @@ func GoogleWebCallback(jwtService *auth.JWTService) gin.HandlerFunc {
 			}
 		}
 
-		// Redirect to family subdomain with user info
-		redirectURL := fmt.Sprintf("https://%s.housepoints.ai%s?email=%s&username=%s",
-			familySlug, redirectPath, url.QueryEscape(email), username)
+		// Redirect to family subdomain with JWT token
+		redirectURL := fmt.Sprintf("https://%s.housepoints.ai%s?token=%s&google_login=true",
+			familySlug, redirectPath, url.QueryEscape(token))
 
+		log.Printf("OAuth callback complete for %s@%s, redirecting to %s", username, familySlug, redirectURL)
 		c.Redirect(http.StatusTemporaryRedirect, redirectURL)
 	}
 }
