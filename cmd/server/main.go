@@ -128,6 +128,11 @@ func main() {
 
 	// Authentication endpoints
 	r.POST("/api/auth/login", middleware.RequireFamily(), handlers.Login(jwtService))
+	r.POST("/api/auth/google/mobile", middleware.RequireFamily(), handlers.GoogleMobileAuth(jwtService))
+
+	// Web OAuth endpoints (no RequireFamily - handles multi-tenant via state)
+	r.GET("/api/auth/google/init", handlers.GoogleWebInit())
+	r.GET("/api/auth/google/callback", handlers.GoogleWebCallback(jwtService))
 
 	// Protected API routes (require authentication)
 	protected := r.Group("/api")
@@ -135,21 +140,28 @@ func main() {
 	{
 		// Users endpoints
 		protected.GET("/users", handlers.ListUsers)
+		protected.POST("/users", handlers.CreateUser)
 		protected.GET("/users/me", handlers.GetCurrentUser)
 		protected.PATCH("/users/me", handlers.UpdateCurrentUserProfile)
 		protected.PUT("/users/me/preferences", handlers.UpdateCurrentUserPreferences)
 		protected.GET("/users/:id", handlers.GetUser)
+		protected.PUT("/users/:id", handlers.UpdateUser)
+		protected.DELETE("/users/:id", handlers.DeleteUser)
 		protected.GET("/users/:id/points", handlers.GetUserPoints)
 		protected.GET("/users/:id/transactions", handlers.GetUserTransactions)
+		protected.GET("/users/:id/stats", handlers.GetUserStats)
+		protected.GET("/users/:id/redeemed-rewards", handlers.GetRedeemedRewards)
 
 		// Chores endpoints
 		protected.GET("/chores", handlers.ListChores)
 		protected.POST("/chores", handlers.CreateChore)
+		protected.GET("/chores/:id", handlers.GetChore)
 		protected.PUT("/chores/:id", handlers.UpdateChore)
 		protected.DELETE("/chores/:id", handlers.DeleteChore)
 
 		// Assignments endpoints (read)
 		protected.GET("/assignments", handlers.ListAssignments)
+		protected.GET("/assignments/my-assignments", handlers.GetMyAssignments)
 		protected.GET("/assignments/:id", handlers.GetAssignment)
 
 		// Assignments endpoints (write)
@@ -160,6 +172,9 @@ func main() {
 
 		// Rewards endpoints
 		protected.GET("/rewards", handlers.ListRewards)
+		protected.POST("/rewards", handlers.CreateReward)
+		protected.PUT("/rewards/:id", handlers.UpdateReward)
+		protected.DELETE("/rewards/:id", handlers.DeleteReward)
 		protected.POST("/rewards/:id/redeem", handlers.RedeemReward)
 
 		// Leaderboard endpoints
@@ -168,6 +183,17 @@ func main() {
 
 		// Family Schedule endpoints
 		protected.GET("/schedule", handlers.GetFamilySchedule)
+
+		// Settings endpoints
+		protected.GET("/settings", handlers.GetSettings)
+		protected.GET("/settings/:key", handlers.GetSetting)
+		protected.PUT("/settings/:key", handlers.UpdateSetting)
+
+		// Reports endpoints
+		protected.GET("/reports/weekly-summary", handlers.GetWeeklySummary)
+		protected.GET("/reports/child-performance/:child_id", handlers.GetChildPerformance)
+		protected.GET("/reports/category-breakdown", handlers.GetCategoryBreakdown)
+		protected.GET("/reports/performance-trends", handlers.GetPerformanceTrends)
 	}
 
 	// Demo-only endpoints (for testing without auth)
