@@ -537,7 +537,32 @@ func GoogleWebCallback(jwtService *auth.JWTService) gin.HandlerFunc {
 		// Connect to platform DB to get family info
 		platformDBURL := os.Getenv("PLATFORM_DATABASE_URL")
 		if platformDBURL == "" {
-			platformDBURL = "postgres://postgres:HP_Sec2025_O0mZVY90R1Yg8L@10.1.10.20:5432/housepoints_platform?sslmode=disable"
+			// Build from individual env vars
+			dbHost := os.Getenv("DB_HOST")
+			dbPort := os.Getenv("DB_PORT")
+			dbUser := os.Getenv("DB_USER")
+			dbPassword := os.Getenv("DB_PASSWORD")
+			platformDBName := os.Getenv("PLATFORM_DB_NAME")
+
+			// Use defaults if not set
+			if dbHost == "" {
+				dbHost = "10.1.10.20"
+			}
+			if dbPort == "" {
+				dbPort = "5432"
+			}
+			if dbUser == "" {
+				dbUser = "postgres"
+			}
+			if dbPassword == "" {
+				dbPassword = "HP_Sec2025_O0mZVY90R1Yg8L"
+			}
+			if platformDBName == "" {
+				platformDBName = "housepoints_platform"
+			}
+
+			platformDBURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+				dbUser, dbPassword, dbHost, dbPort, platformDBName)
 		}
 
 		ctx := c.Request.Context()
