@@ -91,3 +91,31 @@ func (rr *RewardRedemption) ToResponse(rewardName string) RewardRedemptionRespon
 
 	return response
 }
+
+// RewardCreateRequest is the request body for POST /api/rewards
+type RewardCreateRequest struct {
+	Name                   string  `json:"name" binding:"required"`
+	Description            string  `json:"description"`
+	CostPoints             int     `json:"cost_points" binding:"required,gt=0"`
+	Category               string  `json:"category" binding:"required"`
+	Availability           string  `json:"availability"`
+	StockRemaining         *int    `json:"stock_remaining,omitempty"`
+	Icon                   string  `json:"icon"`
+	ValueInCents           *int    `json:"value_in_cents,omitempty"`
+	RequiresParentApproval bool    `json:"requires_parent_approval"`
+	Active                 bool    `json:"active"`
+}
+
+// RewardUpdateRequest is the request body for PUT /api/rewards/:id
+type RewardUpdateRequest struct {
+	Name                   *string `json:"name,omitempty"`
+	Description            *string `json:"description,omitempty"`
+	CostPoints             *int    `json:"cost_points,omitempty"`
+	Category               *string `json:"category,omitempty"`
+	Availability           *string `json:"availability,omitempty"`
+	StockRemaining         *int    `json:"stock_remaining,omitempty"`
+	Icon                   *string `json:"icon,omitempty"`
+	ValueInCents           *int    `json:"value_in_cents,omitempty"`
+	RequiresParentApproval *bool   `json:"requires_parent_approval,omitempty"`
+	Active                 *bool   `json:"active,omitempty"`
+}

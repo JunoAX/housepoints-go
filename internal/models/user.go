@@ -42,6 +42,34 @@ type User struct {
 	IsActive                  bool       `json:"is_active" db:"is_active"`
 }
 
+// UserCreateRequest is the request body for POST /api/users
+type UserCreateRequest struct {
+	Username     string  `json:"username" binding:"required"`
+	DisplayName  string  `json:"display_name" binding:"required"`
+	IsParent     bool    `json:"is_parent"`
+	Email        *string `json:"email,omitempty"`
+	ColorTheme   string  `json:"color_theme"`
+	LoginEnabled bool    `json:"login_enabled"`
+	Password     *string `json:"password,omitempty"` // Optional initial password
+}
+
+// UserUpdateRequest is the request body for PUT /api/users/:id
+type UserUpdateRequest struct {
+	Username                  *string `json:"username,omitempty"`
+	DisplayName               *string `json:"display_name,omitempty"`
+	Email                     *string `json:"email,omitempty"`
+	ColorTheme                *string `json:"color_theme,omitempty"`
+	IsParent                  *bool   `json:"is_parent,omitempty"`
+	LoginEnabled              *bool   `json:"login_enabled,omitempty"`
+	AvailabilityNotifications *bool   `json:"availability_notifications,omitempty"`
+	AutoApproveWork           *bool   `json:"auto_approve_work,omitempty"`
+	PhoneNumber               *string `json:"phone_number,omitempty"`
+	School                    *string `json:"school,omitempty"`
+	Notes                     *string `json:"notes,omitempty"`
+	DailyGoal                 *int    `json:"daily_goal,omitempty"`
+	UsuallyEatsDinner         *bool   `json:"usually_eats_dinner,omitempty"`
+}
+
 // UserListResponse is the simplified response for user lists
 type UserListResponse struct {
 	ID           uuid.UUID `json:"id"`

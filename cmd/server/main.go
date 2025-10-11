@@ -138,6 +138,9 @@ func main() {
 	protected := r.Group("/api")
 	protected.Use(middleware.RequireFamily(), middleware.RequireAuth(jwtService))
 	{
+		// Auth endpoints
+		protected.GET("/auth/me", handlers.GetCurrentUser) // Alias for /users/me (frontend compatibility)
+
 		// Users endpoints
 		protected.GET("/users", handlers.ListUsers)
 		protected.POST("/users", handlers.CreateUser)
@@ -198,6 +201,17 @@ func main() {
 
 	// Demo-only endpoints (for testing without auth)
 	r.GET("/api/demo/chores", middleware.RequireFamily(), middleware.DemoOnly(), handlers.ListChores)
+
+	// Catch-all proxy to Python backend for unhandled API routes
+	// This MUST be registered last so other routes take precedence
+	r.NoRoute(func(c *gin.Context) {
+		// Only proxy /api/* requests, return 404 for everything else
+		if len(c.Request.URL.Path) >= 4 && c.Request.URL.Path[:4] == "/api" {
+			handlers.ProxyToPythonBackend()(c)
+		} else {
+			c.JSON(404, gin.H{"error": "Not found"})
+		}
+	})
 
 	// Server configuration
 	port := os.Getenv("PORT")

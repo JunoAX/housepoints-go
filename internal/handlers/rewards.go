@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/JunoAX/housepoints-go/internal/middleware"
 	"github.com/JunoAX/housepoints-go/internal/models"
@@ -247,5 +248,243 @@ func RedeemReward(c *gin.Context) {
 		"points_spent":             costPoints,
 		"status":                   status,
 		"requires_parent_approval": requiresParentApproval,
+	})
+}
+
+// CreateReward creates a new reward (parent only)
+func CreateReward(c *gin.Context) {
+	db, ok := middleware.GetFamilyDB(c)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection not found"})
+		return
+	}
+
+	// Check if user is a parent
+	isParent, _ := middleware.GetAuthIsParent(c)
+	if !isParent {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only parents can create rewards"})
+		return
+	}
+
+	var req models.RewardCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	// Set defaults
+	if req.Icon == "" {
+		req.Icon = "🎁"
+	}
+	if req.Availability == "" {
+		req.Availability = "always"
+	}
+
+	rewardID := uuid.New()
+	query := `
+		INSERT INTO rewards (
+			id, name, description, cost_points, category, availability,
+			stock_remaining, icon, value_in_cents, requires_parent_approval,
+			active, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+		RETURNING id
+	`
+
+	var returnedID uuid.UUID
+	err := db.QueryRow(c.Request.Context(), query,
+		rewardID, req.Name, req.Description, req.CostPoints, req.Category,
+		req.Availability, req.StockRemaining, req.Icon, req.ValueInCents,
+		req.RequiresParentApproval, req.Active,
+	).Scan(&returnedID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create reward", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":      returnedID,
+		"message": "Reward created successfully",
+	})
+}
+
+// UpdateReward updates an existing reward (parent only)
+func UpdateReward(c *gin.Context) {
+	db, ok := middleware.GetFamilyDB(c)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection not found"})
+		return
+	}
+
+	// Check if user is a parent
+	isParent, _ := middleware.GetAuthIsParent(c)
+	if !isParent {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only parents can update rewards"})
+		return
+	}
+
+	rewardIDParam := c.Param("id")
+	rewardID, err := uuid.Parse(rewardIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid reward ID format"})
+		return
+	}
+
+	var req models.RewardUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	// Check if reward exists
+	var exists bool
+	err = db.QueryRow(c.Request.Context(), "SELECT EXISTS(SELECT 1 FROM rewards WHERE id = $1)", rewardID).Scan(&exists)
+	if err != nil || !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Reward not found"})
+		return
+	}
+
+	// Build dynamic UPDATE query
+	updates := []string{}
+	args := []interface{}{}
+	argIndex := 1
+
+	if req.Name != nil {
+		updates = append(updates, fmt.Sprintf("name = $%d", argIndex))
+		args = append(args, *req.Name)
+		argIndex++
+	}
+
+	if req.Description != nil {
+		updates = append(updates, fmt.Sprintf("description = $%d", argIndex))
+		args = append(args, *req.Description)
+		argIndex++
+	}
+
+	if req.CostPoints != nil {
+		updates = append(updates, fmt.Sprintf("cost_points = $%d", argIndex))
+		args = append(args, *req.CostPoints)
+		argIndex++
+	}
+
+	if req.Category != nil {
+		updates = append(updates, fmt.Sprintf("category = $%d", argIndex))
+		args = append(args, *req.Category)
+		argIndex++
+	}
+
+	if req.Availability != nil {
+		updates = append(updates, fmt.Sprintf("availability = $%d", argIndex))
+		args = append(args, *req.Availability)
+		argIndex++
+	}
+
+	if req.StockRemaining != nil {
+		updates = append(updates, fmt.Sprintf("stock_remaining = $%d", argIndex))
+		args = append(args, req.StockRemaining)
+		argIndex++
+	}
+
+	if req.Icon != nil {
+		updates = append(updates, fmt.Sprintf("icon = $%d", argIndex))
+		args = append(args, *req.Icon)
+		argIndex++
+	}
+
+	if req.ValueInCents != nil {
+		updates = append(updates, fmt.Sprintf("value_in_cents = $%d", argIndex))
+		args = append(args, req.ValueInCents)
+		argIndex++
+	}
+
+	if req.RequiresParentApproval != nil {
+		updates = append(updates, fmt.Sprintf("requires_parent_approval = $%d", argIndex))
+		args = append(args, *req.RequiresParentApproval)
+		argIndex++
+	}
+
+	if req.Active != nil {
+		updates = append(updates, fmt.Sprintf("active = $%d", argIndex))
+		args = append(args, *req.Active)
+		argIndex++
+	}
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No fields to update"})
+		return
+	}
+
+	updates = append(updates, "updated_at = NOW()")
+	args = append(args, rewardID)
+
+	query := fmt.Sprintf(`
+		UPDATE rewards
+		SET %s
+		WHERE id = $%d
+		RETURNING id, name, description, cost_points, category, availability,
+			stock_remaining, icon, value_in_cents, requires_parent_approval, active
+	`, strings.Join(updates, ", "), argIndex)
+
+	var reward models.Reward
+	err = db.QueryRow(c.Request.Context(), query, args...).Scan(
+		&reward.ID, &reward.Name, &reward.Description, &reward.CostPoints,
+		&reward.Category, &reward.Availability, &reward.StockRemaining,
+		&reward.Icon, &reward.ValueInCents, &reward.RequiresParentApproval,
+		&reward.Active,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update reward", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"reward":  reward,
+		"message": "Reward updated successfully",
+	})
+}
+
+// DeleteReward soft-deletes a reward (parent only)
+func DeleteReward(c *gin.Context) {
+	db, ok := middleware.GetFamilyDB(c)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection not found"})
+		return
+	}
+
+	// Check if user is a parent
+	isParent, _ := middleware.GetAuthIsParent(c)
+	if !isParent {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only parents can delete rewards"})
+		return
+	}
+
+	rewardIDParam := c.Param("id")
+	rewardID, err := uuid.Parse(rewardIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid reward ID format"})
+		return
+	}
+
+	// Soft delete by setting active to false
+	result, err := db.Exec(c.Request.Context(), `
+		UPDATE rewards
+		SET active = false, updated_at = NOW()
+		WHERE id = $1
+	`, rewardID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete reward", "details": err.Error()})
+		return
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Reward not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Reward deleted successfully",
 	})
 }

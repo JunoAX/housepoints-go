@@ -326,3 +326,48 @@ func DeleteChore(c *gin.Context) {
 		"id":      deletedID,
 	})
 }
+
+// GetChore returns details for a specific chore by ID
+func GetChore(c *gin.Context) {
+	db, ok := middleware.GetFamilyDB(c)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection not found"})
+		return
+	}
+
+	choreID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid chore ID"})
+		return
+	}
+
+	query := `
+		SELECT
+			id, name, description, instructions, category, base_points,
+			bonus_eligible, penalty_points, estimated_minutes, difficulty,
+			frequency, active, tags, rotation_eligible, requires_photo,
+			requires_verification, icon, assignment_type, created_at, updated_at
+		FROM chores
+		WHERE id = $1 AND is_active = true
+	`
+
+	var chore models.Chore
+	err = db.QueryRow(c.Request.Context(), query, choreID).Scan(
+		&chore.ID, &chore.Name, &chore.Description, &chore.Instructions, &chore.Category,
+		&chore.BasePoints, &chore.BonusEligible, &chore.PenaltyPoints, &chore.EstimatedMinutes,
+		&chore.Difficulty, &chore.Frequency, &chore.Active, &chore.Tags, &chore.RotationEligible,
+		&chore.RequiresPhoto, &chore.RequiresVerification, &chore.Icon, &chore.AssignmentType,
+		&chore.CreatedAt, &chore.UpdatedAt,
+	)
+
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Chore not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query chore", "details": err.Error()})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, chore)
+}

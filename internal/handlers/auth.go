@@ -519,19 +519,32 @@ func GoogleWebCallback(jwtService *auth.JWTService) gin.HandlerFunc {
 			return
 		}
 
-		// Check authorization
-		email := strings.ToLower(tokenInfo.Email)
-		userConfig, authorized := AuthorizedEmails[email]
-		if !authorized {
-			c.Redirect(http.StatusTemporaryRedirect, "/?error=unauthorized_email")
-			return
-		}
-
 		// Get family database using platform DB
 		familySlug := stateData.FamilySlug
 		if familySlug == "" {
 			c.Redirect(http.StatusTemporaryRedirect, "/?error=missing_family")
 			return
+		}
+
+		// Check authorization based on family
+		email := strings.ToLower(tokenInfo.Email)
+		var username string
+		var isParent bool
+
+		if familySlug == "demo" {
+			// For demo family, check demo_access_requests table
+			// This will be checked when connecting to platform DB below
+			username = strings.Split(email, "@")[0] // Use email prefix as username
+			isParent = false                         // Demo users are not parents by default
+		} else {
+			// For production families, check hardcoded authorized emails
+			userConfig, authorized := AuthorizedEmails[email]
+			if !authorized {
+				c.Redirect(http.StatusTemporaryRedirect, "/?error=unauthorized_email")
+				return
+			}
+			username = userConfig.Username
+			isParent = userConfig.IsParent
 		}
 
 		// Connect to platform DB to get family info
@@ -592,6 +605,32 @@ func GoogleWebCallback(jwtService *auth.JWTService) gin.HandlerFunc {
 			return
 		}
 
+		// For demo family, check demo access approval
+		if familySlug == "demo" {
+			var accessStatus string
+			err = platformPool.QueryRow(ctx, `
+				SELECT status FROM demo_access_requests
+				WHERE LOWER(email) = LOWER($1) AND status = 'approved'
+			`, email).Scan(&accessStatus)
+
+			if err != nil {
+				log.Printf("Demo access not found or not approved for email: %s", email)
+				// Auto-approve by inserting into demo_access_requests
+				_, insertErr := platformPool.Exec(ctx, `
+					INSERT INTO demo_access_requests (email, google_email, status, approved_at)
+					VALUES ($1, $2, 'approved', NOW())
+					ON CONFLICT (email) DO NOTHING
+				`, email, email)
+
+				if insertErr != nil {
+					log.Printf("Failed to auto-approve demo access: %v", insertErr)
+					c.Redirect(http.StatusTemporaryRedirect, "/demo/request-access?email="+url.QueryEscape(email))
+					return
+				}
+				log.Printf("Auto-approved demo access for: %s", email)
+			}
+		}
+
 		// Build family database connection string
 		familyDBURL := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
 			family.DBUser, family.DBPasswordEncrypted, family.DBHost, family.DBPort, family.DBName)
@@ -605,20 +644,16 @@ func GoogleWebCallback(jwtService *auth.JWTService) gin.HandlerFunc {
 		}
 		defer familyPool.Close()
 
-		// Get username from authorized emails config
-		username := userConfig.Username
-
 		// Check if user exists
 		var userID uuid.UUID
-		var isParent bool
+		var existingIsParent bool
 		err = familyPool.QueryRow(ctx, `
 			SELECT id, is_parent FROM users WHERE username = $1
-		`, username).Scan(&userID, &isParent)
+		`, username).Scan(&userID, &existingIsParent)
 
 		if err != nil {
 			// User doesn't exist, create them
 			userID = uuid.New()
-			isParent = userConfig.IsParent
 
 			_, err = familyPool.Exec(ctx, `
 				INSERT INTO users (id, username, email, is_parent, family_id, created_at, updated_at)
